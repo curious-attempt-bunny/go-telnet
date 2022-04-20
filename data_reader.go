@@ -1,17 +1,15 @@
 package telnet
 
-
 import (
 	"bufio"
 	"errors"
 	"io"
+	"net"
 )
-
 
 var (
 	errCorrupted = errors.New("Corrupted")
 )
-
 
 // An internalDataReader deals with "un-escaping" according to the TELNET protocol.
 //
@@ -57,22 +55,22 @@ var (
 //	[]byte{1, 55, 2, 155, 3, 255, 4, 40, 255, 30, 20}
 type internalDataReader struct {
 	wrapped  io.Reader
-	buffered  *bufio.Reader
+	buffered *bufio.Reader
+	conn     net.Conn
 }
 
-
 // newDataReader creates a new DataReader reading from 'r'.
-func newDataReader(r io.Reader) *internalDataReader {
-	buffered := bufio.NewReader(r)
+func newDataReader(conn net.Conn) *internalDataReader {
+	buffered := bufio.NewReader((io.Reader)(conn))
 
 	reader := internalDataReader{
-		wrapped:r,
-		buffered:buffered,
+		wrapped:  (io.Reader)(conn),
+		buffered: buffered,
+		conn:     conn,
 	}
 
 	return &reader
 }
-
 
 // Read reads the TELNET escaped data from the  wrapped io.Reader, and "un-escapes" it into 'data'.
 func (r *internalDataReader) Read(data []byte) (n int, err error) {
@@ -84,7 +82,7 @@ func (r *internalDataReader) Read(data []byte) (n int, err error) {
 
 	const WILL = 251
 	const WONT = 252
-	const DO   = 253
+	const DO = 253
 	const DONT = 254
 
 	p := data
@@ -107,9 +105,20 @@ func (r *internalDataReader) Read(data []byte) (n int, err error) {
 
 			switch peeked[0] {
 			case WILL, WONT, DO, DONT:
-				_, err = r.buffered.Discard(2)
+				_, err := r.buffered.ReadByte()
 				if nil != err {
 					return n, err
+				}
+
+				option, err := r.buffered.ReadByte()
+				if nil != err {
+					return n, err
+				}
+
+				if peeked[0] == WILL {
+					r.conn.Write([]byte{0xff, WONT, option})
+				} else if peeked[0] == DO {
+					r.conn.Write([]byte{0xff, WONT, option})
 				}
 			case IAC:
 				p[0] = IAC
@@ -157,7 +166,7 @@ func (r *internalDataReader) Read(data []byte) (n int, err error) {
 				}
 			default:
 				// If we get in here, this is not following the TELNET protocol.
-//@TODO: Make a better error.
+				//@TODO: Make a better error.
 				err = errCorrupted
 				return n, err
 			}
